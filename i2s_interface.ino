@@ -3,7 +3,7 @@
  *
  * Author: Marcel Licence
  */
-
+#include <driver/i2s.h>
 
 /*
  * no dac not tested within this code
@@ -68,8 +68,7 @@ bool writeDAC(float DAC_f)
 
 #else
 
-bool i2s_write_sample_32ch2(uint64_t sample)
-{
+bool i2s_write_sample_32ch2(uint64_t sample ){
     static size_t bytes_written = 0;
     i2s_write((i2s_port_t)i2s_num, (const char *)&sample, 8, &bytes_written, portMAX_DELAY);
 
@@ -84,6 +83,20 @@ bool i2s_write_sample_32ch2(uint64_t sample)
 }
 
 #endif
+
+inline
+bool i2s_write_samples(float left, float right ){
+    static union sampleTUNT{
+        uint64_t sample;
+        int32_t ch[2];
+    } sampleDataU;
+
+    sampleDataU.ch[0] = int32_t(left * 536870911.0f);
+    sampleDataU.ch[1] = int32_t(right * 536870911.0f);
+
+    return i2s_write_sample_32ch2( sampleDataU.sample );
+}
+
 
 
 /*
@@ -129,8 +142,7 @@ i2s_pin_config_t pins =
 #endif
 
 
-void setup_i2s()
-{
+void setup_i2s(){
     i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
     i2s_set_pin(I2S_NUM_0, &pins);
     i2s_set_sample_rates(i2s_num, SAMPLE_RATE);
