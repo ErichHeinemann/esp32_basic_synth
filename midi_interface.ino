@@ -4,11 +4,6 @@
  * Author: Marcel Licence
  */
 
-/*History:
-2021-04-20 E.Heinemann replaced the custom MIDI-Code by the Arduino MIDI Library from Fiftheenstep.
-                       CC-Messages are not yet connected to the synth-module
-*/
-
 
 /*
  * look for midi interface using 1N136
@@ -240,8 +235,19 @@ void handlePitchBend( byte channel, int bend ){
 #ifdef FILTERCHANNEL
   if( channel == FILTERCHANNEL ){
 #endif 
-  float newBend = NORM127MUL * NORM127MUL * (bend + 8192) / 1.015744f; // 
-  Serial.printf("Pitchbend %X %3f\n", channel, newBend );
+  globalBend = 1;
+  if( bend > 0){
+    // linear bend up
+    globalBend = (float) 1.0f + (1.0f *bend) / 8191;
+  } 
+
+  if( bend < 0){
+    // linear Bedn down: 0.5 - 1 = -8192 : 0
+    globalBend = (float) 1.0f +  (1.0f * bend) / ( 8192*2 );
+  } 
+
+ 
+  Serial.printf("GlobalBend %X %3f\n", channel, globalBend );
  
   // Or someting if pitch is negativ and something else if the bend is positiv ... 
 #ifdef FILTERCHANNEL
