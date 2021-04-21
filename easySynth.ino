@@ -6,6 +6,9 @@
  * - allows usage of multiple oscillators per voice
  *
  * Author: Marcel Licence
+ *
+ *
+ * 2021-04-22 E.Heinemann, added Pitchbend-Control with global Bend
  */
 
 /*
@@ -23,12 +26,12 @@
  */
 #ifdef USE_UNISON
 /* use another setting, because unison supports more than 2 osc per voice */
-#define MAX_DETUNE		12 /* 1 + 11 additional tones */
-#define MAX_POLY_OSC	36 /* osc polyphony, always active reduces single voices max poly */
-#define MAX_POLY_VOICE	3  /* max single voices, can use multiple osc */
+#define MAX_DETUNE    12 /* 1 + 11 additional tones */
+#define MAX_POLY_OSC  36 /* osc polyphony, always active reduces single voices max poly */
+#define MAX_POLY_VOICE  3  /* max single voices, can use multiple osc */
 #else
-#define MAX_POLY_OSC	22 /* osc polyphony, always active reduces single voices max poly */
-#define MAX_POLY_VOICE	11 /* max single voices, can use multiple osc */
+#define MAX_POLY_OSC  22 /* osc polyphony, always active reduces single voices max poly */
+#define MAX_POLY_VOICE  11 /* max single voices, can use multiple osc */
 #endif
 
 
@@ -36,11 +39,11 @@
  * this is just a kind of magic to go through the waveforms
  * - WAVEFORM_BIT sets the bit length of the pre calculated waveforms
  */
-#define WAVEFORM_BIT	10UL
-#define WAVEFORM_CNT	(1<<WAVEFORM_BIT)
-#define WAVEFORM_Q4		(1<<(WAVEFORM_BIT-2))
-#define WAVEFORM_MSK	((1<<WAVEFORM_BIT)-1)
-#define WAVEFORM_I(i)	((i) >> (32 - WAVEFORM_BIT)) & WAVEFORM_MSK
+#define WAVEFORM_BIT  10UL
+#define WAVEFORM_CNT  (1<<WAVEFORM_BIT)
+#define WAVEFORM_Q4   (1<<(WAVEFORM_BIT-2))
+#define WAVEFORM_MSK  ((1<<WAVEFORM_BIT)-1)
+#define WAVEFORM_I(i) ((i) >> (32 - WAVEFORM_BIT)) & WAVEFORM_MSK
 
 
 #define MIDI_NOTE_CNT 128
@@ -50,10 +53,12 @@ uint32_t midi_note_to_add[MIDI_NOTE_CNT]; /* lookup to playback waveforms with c
 uint32_t midi_note_to_add50c[MIDI_NOTE_CNT]; /* lookup for detuning */
 #endif
 
+// float globalBent = 1.0;
+
 /*
  * set the correct count of available waveforms
  */
-#define WAVEFORM_TYPE_COUNT	7
+#define WAVEFORM_TYPE_COUNT 7
 
 /*
  * add here your waveforms
@@ -128,6 +133,7 @@ struct oscillatorT
     float *waveForm;
     float *dest;
     uint32_t samplePos;
+    float samplePosF;
     uint32_t addVal;
     float pan_l;
     float pan_r;
@@ -368,14 +374,11 @@ inline bool ADSR_Process(const struct adsrT *ctrl, float *ctrlSig, adsr_phaseT *
     return true;
 }
 
-void Voice_Off(uint32_t i)
-{
+void Voice_Off(uint32_t i){
     notePlayerT *voice = &voicePlayer[i];
-    for (int f = 0; f < MAX_POLY_OSC; f++)
-    {
+    for (int f = 0; f < MAX_POLY_OSC; f++){
         oscillatorT *osc = &oscPlayer[f];
-        if (osc->dest == voice->lastSample)
-        {
+        if (osc->dest == voice->lastSample){
             osc->dest = voiceSink;
             osc_act -= 1;
         }
@@ -387,8 +390,7 @@ static float out_l, out_r;
 static uint32_t count = 0;
 
 //[[gnu::noinline, gnu::optimize ("fast-math")]]
-inline void Synth_Process(float *left, float *right)
-{
+inline void Synth_Process(float *left, float *right ){
 
     /* gerenate a noise signal */
     float noise_signal = ((random(1024) / 512.0f) - 1.0f) * soundNoiseLevel;
@@ -411,11 +413,10 @@ inline void Synth_Process(float *left, float *right)
     /*
      * oscillator processing -> mix to voice
      */
-    for (int i = 0; i < MAX_POLY_OSC; i++)
-    {
+    for (int i = 0; i < MAX_POLY_OSC; i++ ){
         oscillatorT *osc = &oscPlayer[i];
-        {
-            osc->samplePos += osc->addVal;
+        { 
+            osc->samplePos += (uint32_t) (globalBend * osc->addVal);            
             float sig = osc->waveForm[WAVEFORM_I(osc->samplePos)];
             osc->dest[0] += osc->pan_l * sig;
             osc->dest[1] += osc->pan_r * sig;
@@ -428,13 +429,10 @@ inline void Synth_Process(float *left, float *right)
     for (int i = 0; i < MAX_POLY_VOICE; i++) /* one loop is faster than two loops */
     {
         notePlayerT *voice = &voicePlayer[i];
-        if (voice->active)
-        {
-            if (count % 4 == 0)
-            {
+        if( voice->active ){
+            if( count % 4 == 0 ){
                 voice->active = ADSR_Process(&adsr_vol, &voice->control_sign, &voice->phase);
-                if (voice->active == false)
-                {
+                if( voice->active == false ){
                     Voice_Off(i);
                 }
                 /*
@@ -450,8 +448,7 @@ inline void Synth_Process(float *left, float *right)
             voice->lastSample[0] *= voice->control_sign * voice->velocity;
             voice->lastSample[1] *= voice->control_sign * voice->velocity;
 
-            if (count % 32 == 0)
-            {
+            if( count % 32 == 0 ){
                 voice->f_control_sign_slow = 0.05 * voice->f_control_sign + 0.95 * voice->f_control_sign_slow;
                 Filter_Calculate(voice->f_control_sign_slow, soundFiltReso, &voice->filterC);
             }
@@ -529,8 +526,7 @@ inline void Synth_NoteOn(uint8_t note)
     /*
      * No free voice found, return otherwise crash xD
      */
-    if ((voice == NULL) || (osc == NULL))
-    {
+    if ((voice == NULL) || (osc == NULL)){
         //Serial.printf("voc: %d, osc: %d\n", voc_act, osc_act);
         return ;
     }
@@ -544,8 +540,7 @@ inline void Synth_NoteOn(uint8_t note)
 #if 0
     voice->f_phase = attack;
 #else
-    if (adsr_fil.a < adsr_fil.s)
-    {
+    if (adsr_fil.a < adsr_fil.s){
         adsr_fil.a = adsr_fil.s;
     }
     voice->f_phase = decay;
@@ -561,8 +556,7 @@ inline void Synth_NoteOn(uint8_t note)
      * add oscillator
      */
 #ifdef USE_UNISON
-    if (unison > 0 )
-    {
+    if (unison > 0 ){
         /*
          * shift first oscillator down
          */
@@ -573,6 +567,7 @@ inline void Synth_NoteOn(uint8_t note)
     {
         osc->addVal = midi_note_to_add[note];
     }
+    osc->samplePosF = 0.0f;
     osc->samplePos = 0;
     osc->waveForm = *selectedWaveForm;
     osc->dest = voice->lastSample;
@@ -592,32 +587,28 @@ inline void Synth_NoteOn(uint8_t note)
     for (int i = 0; i < unison; i++)
     {
         osc = getFreeOsc();
-        if (osc == NULL)
-        {
+        if( osc == NULL ){
             //Serial.printf("voc: %d, osc: %d\n", voc_act, osc_act);
             return ;
         }
 
         osc->addVal = midi_note_to_add[note] + ((i + 1 - (unison * 0.5)) * midi_note_to_add50c[note] * detune / unison);
         osc->samplePos = (uint32_t)random(1 << 31); /* otherwise it sounds ... bad!? */
+        osc->samplePosF = 1.0f * osc->samplePos; /* otherwise it sounds ... bad!? */
         osc->waveForm = *selectedWaveForm2;
         osc->dest = voice->lastSample;
 
         /*
          * put last osc in the middle
          */
-        if ((unison - 1) == i)
-        {
+        if ((unison - 1) == i){
             osc->pan_l = 1;
             osc->pan_r = 1;
         }
-        else if (pan == 1)
-        {
+        else if( pan == 1 ){
             osc->pan_l = 1;
             osc->pan_r = 0.5;
-        }
-        else
-        {
+        }else{
             osc->pan_l = 0.5;
             osc->pan_r = 1;
         }
@@ -626,11 +617,10 @@ inline void Synth_NoteOn(uint8_t note)
     }
 #else
     osc = getFreeOsc();
-    if (osc != NULL)
-    {
-        if (note + 12 < 128)
-        {
-            osc->addVal = midi_note_to_add[note + 12];
+    if( osc != NULL ){
+        if (note + 12 < 128){
+            osc->addVal = midi_note_to_add[ note + 12 ];
+            osc->samplePosF = 0.0f; /* we could add some offset maybe */
             osc->samplePos = 0; /* we could add some offset maybe */
             osc->waveForm = *selectedWaveForm2;
             osc->dest = voice->lastSample;
@@ -660,19 +650,15 @@ inline void Synth_NoteOn(uint8_t note)
 
 inline void Synth_NoteOff(uint8_t note)
 {
-    for (int i = 0; i < MAX_POLY_VOICE ; i++)
-    {
-        if ((voicePlayer[i].active) && (voicePlayer[i].midiNote == note))
-        {
+    for( int i = 0; i < MAX_POLY_VOICE ; i++ ){
+        if((voicePlayer[i].active) && (voicePlayer[i].midiNote == note)){
             voicePlayer[i].phase = release;
         }
     }
 }
 
-void Synth_SetRotary(uint8_t rotary, float value)
-{
-    switch (rotary)
-    {
+void Synth_SetRotary(uint8_t rotary, float value ){
+    switch( rotary ){
 #ifdef USE_UNISON
     case 0:
         detune = value;
@@ -781,4 +767,3 @@ void Synth_SetSlider(uint8_t slider, float value)
         break;
     }
 }
-
