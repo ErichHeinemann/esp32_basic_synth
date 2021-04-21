@@ -4,9 +4,11 @@
  *
  * Author: Marcel Licence
  */
-/* 2021-04-20 E.Heinemann, replaced custom MIDI Code the the Arduino MIDI Library 
-
+ /* 
+  *  2021-04-20 E.Heinemann, replaced custom MIDI Code the the Arduino MIDI Library 
+  *  2021-04-21 E.Heinemann, added Pitchbend-Control
 */
+
 
 /*
  * required include files
@@ -47,13 +49,18 @@ uint8_t last_biReso;        // Resonance of the filter
 
 // These values are only used to make an integration with MIDI, additional analog inputs or with an Menü slightly simplier
 // The values could be 0 - 127 or floats ... 
+
 uint8_t global_playbackspeed; // The Playbackspeed
 uint8_t global_bitcrush;      // is bitcrusher active
 uint8_t global_biCutoff;      // Cutoff-Frequency of the filter
 uint8_t global_biReso;        // Resonance of the filter
 
 
+// Pitchbend
+float globalBend = 1.0;
+float globalModulation = 1.0; // like Bend a global value which could go from 0.95 to 1.05 via Sinus
 
+// float global env_mod = 1;  // env to pitch? 
 
 
 
