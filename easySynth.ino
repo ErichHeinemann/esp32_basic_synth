@@ -6,9 +6,10 @@
  * - allows usage of multiple oscillators per voice
  *
  * Author: Marcel Licence
- *
- *
- * 2021-04-22 E.Heinemann, added Pitchbend-Control with global Bend
+ * 
+ * 
+ *  2021-04-22 E.Heinemann, added Pitchbend-Control with global Bend
+ *  2021-04-23 E.Heinemann, added Modulation-Control, as the list of lfo-matrix-variables it looks promising but only Pitch-Modulation is implemented yet!!
  */
 
 /*
@@ -18,7 +19,11 @@
  * - waveform1 -> detune
  * - waveform2 -> oscillator count
  */
-//#define USE_UNISON
+// #define USE_UNISON
+
+// #define DEBUG_SYNTH
+
+#define NORM127MUL  0.007874f
 
 
 /*
@@ -71,6 +76,24 @@ float *tri = NULL;
 float *noise = NULL;
 float *silence = NULL;
 
+float  lfoSamplePosF=0.0; // LFO-Position which uses SAW- or SIN-Wavform
+uint32_t  lfoSamplePos=0; // LFO-Position which uses SAW- or SIN-Wavform
+float lfoSampleAdd=0.1; // Slower or faster LFO
+float lfoAmplitude = 1.0; //  range from 0.0 to 1.0;
+float lfo_sig; // lfo-Signal
+boolean lfoOn = true;
+
+float lfo_matrix_to_pitch        = 0.019; // how is pitch modulated
+float lfo_matrix_to_adsr_attack  = 0.0; // how to modulate the Attack
+float lfo_matrix_to_volume       = 0.0;  // modulate Volume
+float lfo_matrix_to_filter_freq  = 0.0;  // modulate Filter_Freq
+float lfo_matrix_to_filter_resonance = 0.0;  // modulate Filter_Resonance
+float lfo_matrix_to_delay_time   = 0.0;  // modulate Delay-Time
+float lfo_matrix_to_delay_amount = 0.0;  // modulate Delay-Amount
+float lfo_matrix_to_panning      = 0.0;  // modulate Stereo-Panning
+
+
+
 /*
  * do not forget to enter the waveform pointer addresses here
  */
@@ -88,9 +111,12 @@ float **selectedWaveForm =  &saw;
 float **selectedWaveForm2 =  &saw;
 #else
 float **selectedWaveForm =  &pulse;
-float **selectedWaveForm2 =  &silence;
+float **selectedWaveForm2 =  &tri;
 #endif
 
+// LFO
+float **selectedLfoWaveForm = &sine; //  waveFormLookUp[ 1 ];
+float *lfoWaveForm;
 
 
 struct adsrT
@@ -106,7 +132,7 @@ struct adsrT adsr_fil = {1.0f, 0.25f, 1.0f, 0.01f};
 
 typedef enum
 {
-    attack, decay, sustain, release
+  attack, decay, sustain, release
 } adsr_phaseT;
 
 /* this prototype is required .. others not -  i still do not know what magic arduino is doing */
@@ -196,8 +222,7 @@ void Synth_Init()
      * - using lookup tables can save a lot of processing power later
      * - but it does consume memory
      */
-    for (int i = 0; i < WAVEFORM_CNT; i++)
-    {
+    for (int i = 0; i < WAVEFORM_CNT; i++){
         float val = (float)sin(i * 2.0 * PI / WAVEFORM_CNT);
         sine[i] = val;
         saw[i] = (2.0f * ((float)i) / ((float)WAVEFORM_CNT)) - 1.0f;
@@ -234,8 +259,7 @@ void Synth_Init()
     /*
      * prepare lookup for constants to drive oscillators
      */
-    for (int i = 0; i < MIDI_NOTE_CNT; i++)
-    {
+    for (int i = 0; i < MIDI_NOTE_CNT; i++ ){
         float f = ((pow(2.0f, (float)(i - 69) / 12.0f) * 440.0f));
         uint32_t add = (uint32_t)(f * ((float)(1ULL << 32ULL) / ((float)SAMPLE_RATE)));
         midi_note_to_add[i] = add;
@@ -253,6 +277,11 @@ void Synth_Init()
      */
     mainFilterL.filterCoeff = &filterGlobalC;
     mainFilterR.filterCoeff = &filterGlobalC;
+
+    
+   lfoWaveForm = *selectedLfoWaveForm;
+
+    
 }
 
 struct filterCoeffT mainFilt;
@@ -273,6 +302,52 @@ static float filtReso = 0.5f;
 static float soundFiltReso = 0.5f;
 static float soundNoiseLevel = 0.0f;
 
+//inline 
+
+// 0-127
+void set_LFOSpeed( uint8_t lfospeed ){
+  if( lfospeed > 0 ){
+    lfoOn = true;
+    lfoSampleAdd = NORM127MUL * lfospeed;
+  }else{
+    lfoSampleAdd = 0.0;
+    lfoOn = false;
+    LFO_sync_sin();    
+  }  
+}
+
+// 0-127
+void set_LFOAmplitude( uint8_t lfoamp ){
+  lfoAmplitude = NORM127MUL * lfoamp;
+}
+
+void LFO_calc(){
+  // calculate the next LFO_value
+
+  lfoSamplePosF += lfoSampleAdd;
+  lfoSamplePos = round( lfoSamplePosF );//   lfoSamplePosF;
+  
+  // float lfo_sig = lfoWaveForm[WAVEFORM_I( lfoSamplePos )];
+  lfo_sig = lfoAmplitude *lfoWaveForm[ lfoSamplePos ];
+  // Serial.print( lfoSamplePos );
+  // Serial.print( "  "  );
+#ifdef DEBUG_SYNTH
+  Serial.println( lfo_sig );
+#endif  
+  if( lfoSamplePos >= 1024 ){
+    LFO_sync_sin();
+  }
+}
+
+void LFO_sync_sin(){
+    lfoSamplePosF = 0.0;
+    lfoSamplePos = 0;
+}
+
+void LFO_sync_cos(){
+    lfoSamplePosF = 256.0;
+    lfoSamplePos = 256;
+}
 /*
  * calculate coefficients of the 2nd order IIR filter
  */
@@ -290,16 +365,13 @@ inline void Filter_Calculate(float c, float reso, struct filterCoeffT *const  fi
      */
     c = c * c * c;
 
-    if (c >= 1.0f)
-    {
+    if (c >= 1.0f){
         omega = 1.0f;
     }
-    else if (c < 0.0025f)
-    {
+    else if (c < 0.0025f){
         omega = 0.0025f;
     }
-    else
-    {
+    else{
         omega = c;
     }
 
@@ -410,13 +482,19 @@ inline void Synth_Process(float *left, float *right ){
     voiceSink[0] = 0;
     voiceSink[1] = 0;
 
+
+    // calculate modulation-value based on one wavform
+
+     
+
     /*
      * oscillator processing -> mix to voice
      */
     for (int i = 0; i < MAX_POLY_OSC; i++ ){
         oscillatorT *osc = &oscPlayer[i];
-        { 
-            osc->samplePos += (uint32_t) (globalBend * osc->addVal);            
+        {
+            // portamento has to be calculated per Oscillator by incrementing from old osc->addVal to the curreent addVal.  
+            osc->samplePos += (uint32_t) ( ( 1 + ( lfo_sig * lfo_matrix_to_pitch )) * globalBend * osc->addVal  );            
             float sig = osc->waveForm[WAVEFORM_I(osc->samplePos)];
             osc->dest[0] += osc->pan_l * sig;
             osc->dest[1] += osc->pan_r * sig;
