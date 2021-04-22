@@ -181,10 +181,13 @@ void handleControlChange( byte channel, byte number, byte value){
   if( channel == FILTERCHANNEL ){
 #endif
   // - Sampler_SetPlaybackSpeed( NORM127MUL * value ); // value from 0 to 2
-  // Modwheel CC==1  
+  // Modwheel is CC==1  
   if( number ==1 ){
     // Effect_SetBiReso( NORM127MUL * value );
+    //set_LFOAmplitude( value );
+    set_LFOSpeed(value);    
   } 
+  
   // - Effect_SetBitCrusher( float value )
   // - Effect_SetBiCutoff(float value )
 
