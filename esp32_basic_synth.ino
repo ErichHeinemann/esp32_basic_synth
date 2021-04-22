@@ -45,7 +45,9 @@ uint8_t last_playbackspeed; // The Playbackspeed
 uint8_t last_bitcrush;      // is bitcrusher active
 uint8_t last_biCutoff;      // Cutoff-Frequency of the filter
 uint8_t last_biReso;        // Resonance of the filter
+
 #endif
+
 
 // These values are only used to make an integration with MIDI, additional analog inputs or with an Menü slightly simplier
 // The values could be 0 - 127 or floats ... 
@@ -156,6 +158,9 @@ void loop(){
     }
 #endif
 
+
+    LFO_calc();
+    
     /*
      * Midi does not required to be checked after every processed sample
      * - we divide our operation by 8
@@ -164,10 +169,15 @@ void loop(){
          MIDI_Process();
     }
 
+
+
 #ifdef ANALOG_INPUTS
     // The valuees could be changed by Potentiometers or by MIDI
     analog_prescaler++;
     if( analog_prescaler > 23 ){
+
+    
+      
      tmp_playbackspeed = floor( analogRead( gpio_playbackspeed ) /32 );
      tmp_bitcrush = floor( analogRead( gpio_bitcrush ) /32 );
      tmp_biCutoff = floor( analogRead( gpio_biCutoff ) /32 );
