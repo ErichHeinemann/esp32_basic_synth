@@ -19,8 +19,10 @@ I was able to power a Raspberry Pi3 with the standard powersupply with 2.5Amps a
 - 2 PCM5102 Boards ( one for the raspi as "Hifiberry" and a second for the ESP32 )
 - MIDI - In Board with 6N139
 
+Pitchbend added on 2021-04-21, Pitchrange fixed to 1 Octave UP/Down
+Modulation-Wheel to manipulte Pitch-Modulation added on 2021-04-22
+
 ToDo / Missing functions:
-Pitchbend 
 Program-Management
 Mapping of CCs to existing code for ADSR, Filter, Delay
 Velocity - Mapping to a Modulation-"Matrix"??
