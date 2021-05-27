@@ -6,6 +6,13 @@ The project can be seen in my video https://www.youtube.com/watch?v=5XVK5MOKmZw
 The project has been tested on the ESP32 DEVKIT - DOIT
 An external audio DAC is recommended.
 
+2021-05-26 E.Heinemann
+Marcel did a better implementation of Pitchbend and MOD-Wheel. Therefore, I went back to his code.
+Integration of AKWF-Waveforms is experimental and replaced the waveform "silence".
+The implementation of the MIDI-Library is lost for now.
+I added the Reverb and changed the Delay to Stereo. It is the same consumption of Memory as the version before.
+
+
 2021-04-20 E.Heinemann
 I tried to use the Arduino MIDI Library to create a small basic synth to extend an "Samplerbox.org" - Sampler based on Raspberry Pi.
 This sampler usese 3.3 Volts for MIDI and the Serial RX-Pin of the PI.
