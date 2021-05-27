@@ -6,10 +6,6 @@
  * - allows usage of multiple oscillators per voice
  *
  * Author: Marcel Licence
- * 
- * 
- *  2021-04-22 E.Heinemann, added Pitchbend-Control with global Bend
- *  2021-04-23 E.Heinemann, added Modulation-Control, as the list of lfo-matrix-variables it looks promising but only Pitch-Modulation is implemented yet!!
  */
 
 /*
@@ -21,9 +17,33 @@
  */
 // #define USE_UNISON
 
-// #define DEBUG_SYNTH
+#include "AKWF.h"
 
-#define NORM127MUL  0.007874f
+/*
+ * Param indices for Synth_SetParam function
+ */
+#define SYNTH_PARAM_VEL_ENV_ATTACK	0
+#define SYNTH_PARAM_VEL_ENV_DECAY	1
+#define SYNTH_PARAM_VEL_ENV_SUSTAIN	2
+#define SYNTH_PARAM_VEL_ENV_RELEASE	3
+
+#define SYNTH_PARAM_FIL_ENV_ATTACK	4
+#define SYNTH_PARAM_FIL_ENV_DECAY	5
+#define SYNTH_PARAM_FIL_ENV_SUSTAIN	6
+#define SYNTH_PARAM_FIL_ENV_RELEASE	7
+
+#ifdef USE_UNISON
+#define SYNTH_PARAM_DETUNE_1		8
+#define SYNTH_PARAM_UNISON_2		9
+#else
+#define SYNTH_PARAM_WAVEFORM_1		8
+#define SYNTH_PARAM_WAVEFORM_2		9
+#endif
+
+#define SYNTH_PARAM_MAIN_FILT_CUTOFF	10
+#define SYNTH_PARAM_MAIN_FILT_RESO		11
+#define SYNTH_PARAM_VOICE_FILT_RESO		12
+#define SYNTH_PARAM_VOICE_NOISE_LEVEL	13
 
 
 /*
@@ -31,12 +51,12 @@
  */
 #ifdef USE_UNISON
 /* use another setting, because unison supports more than 2 osc per voice */
-#define MAX_DETUNE    12 /* 1 + 11 additional tones */
-#define MAX_POLY_OSC  36 /* osc polyphony, always active reduces single voices max poly */
-#define MAX_POLY_VOICE  3  /* max single voices, can use multiple osc */
+#define MAX_DETUNE		12 /* 1 + 11 additional tones */
+#define MAX_POLY_OSC	36 /* osc polyphony, always active reduces single voices max poly */
+#define MAX_POLY_VOICE	3  /* max single voices, can use multiple osc */
 #else
-#define MAX_POLY_OSC  22 /* osc polyphony, always active reduces single voices max poly */
-#define MAX_POLY_VOICE  11 /* max single voices, can use multiple osc */
+#define MAX_POLY_OSC	22 /* osc polyphony, always active reduces single voices max poly */
+#define MAX_POLY_VOICE	11 /* max single voices, can use multiple osc */
 #endif
 
 
@@ -44,11 +64,11 @@
  * this is just a kind of magic to go through the waveforms
  * - WAVEFORM_BIT sets the bit length of the pre calculated waveforms
  */
-#define WAVEFORM_BIT  10UL
-#define WAVEFORM_CNT  (1<<WAVEFORM_BIT)
-#define WAVEFORM_Q4   (1<<(WAVEFORM_BIT-2))
-#define WAVEFORM_MSK  ((1<<WAVEFORM_BIT)-1)
-#define WAVEFORM_I(i) ((i) >> (32 - WAVEFORM_BIT)) & WAVEFORM_MSK
+#define WAVEFORM_BIT	10UL
+#define WAVEFORM_CNT	(1<<WAVEFORM_BIT)
+#define WAVEFORM_Q4		(1<<(WAVEFORM_BIT-2))
+#define WAVEFORM_MSK	((1<<WAVEFORM_BIT)-1)
+#define WAVEFORM_I(i)	((i) >> (32 - WAVEFORM_BIT)) & WAVEFORM_MSK
 
 
 #define MIDI_NOTE_CNT 128
@@ -58,12 +78,10 @@ uint32_t midi_note_to_add[MIDI_NOTE_CNT]; /* lookup to playback waveforms with c
 uint32_t midi_note_to_add50c[MIDI_NOTE_CNT]; /* lookup for detuning */
 #endif
 
-// float globalBent = 1.0;
-
 /*
  * set the correct count of available waveforms
  */
-#define WAVEFORM_TYPE_COUNT 7
+#define WAVEFORM_TYPE_COUNT	7
 
 /*
  * add here your waveforms
@@ -73,31 +91,13 @@ float *saw = NULL;
 float *square = NULL;
 float *pulse = NULL;
 float *tri = NULL;
-float *noise = NULL;
+float *crappy_noise = NULL;
 float *silence = NULL;
-
-float  lfoSamplePosF=0.0; // LFO-Position which uses SAW- or SIN-Wavform
-uint32_t  lfoSamplePos=0; // LFO-Position which uses SAW- or SIN-Wavform
-float lfoSampleAdd=0.1; // Slower or faster LFO
-float lfoAmplitude = 1.0; //  range from 0.0 to 1.0;
-float lfo_sig; // lfo-Signal
-boolean lfoOn = true;
-
-float lfo_matrix_to_pitch        = 0.019; // how is pitch modulated
-float lfo_matrix_to_adsr_attack  = 0.0; // how to modulate the Attack
-float lfo_matrix_to_volume       = 0.0;  // modulate Volume
-float lfo_matrix_to_filter_freq  = 0.0;  // modulate Filter_Freq
-float lfo_matrix_to_filter_resonance = 0.0;  // modulate Filter_Resonance
-float lfo_matrix_to_delay_time   = 0.0;  // modulate Delay-Time
-float lfo_matrix_to_delay_amount = 0.0;  // modulate Delay-Amount
-float lfo_matrix_to_panning      = 0.0;  // modulate Stereo-Panning
-
-
 
 /*
  * do not forget to enter the waveform pointer addresses here
  */
-float **waveFormLookUp[WAVEFORM_TYPE_COUNT] = {&sine, &saw, &square, &pulse, &tri, &noise, &silence};
+float *waveFormLookUp[WAVEFORM_TYPE_COUNT];
 
 /*
  * pre selected waveforms
@@ -105,18 +105,15 @@ float **waveFormLookUp[WAVEFORM_TYPE_COUNT] = {&sine, &saw, &square, &pulse, &tr
 
 
 #ifdef USE_UNISON
-static float detune = 0.1; /* detune parameter */
-static uint8_t unison = 0; /* additional osc per voice count */
-float **selectedWaveForm =  &saw;
-float **selectedWaveForm2 =  &saw;
+static float detune = 0.19; /* detune parameter */
+static uint8_t unison = 4; /* additional osc per voice count */
+float *selectedWaveForm;
+float *selectedWaveForm2;
 #else
-float **selectedWaveForm =  &pulse;
-float **selectedWaveForm2 =  &tri;
+float *selectedWaveForm;
+float *selectedWaveForm2;
 #endif
 
-// LFO
-float **selectedLfoWaveForm = &sine; //  waveFormLookUp[ 1 ];
-float *lfoWaveForm;
 
 
 struct adsrT
@@ -132,7 +129,7 @@ struct adsrT adsr_fil = {1.0f, 0.25f, 1.0f, 0.01f};
 
 typedef enum
 {
-  attack, decay, sustain, release
+    attack, decay, sustain, release
 } adsr_phaseT;
 
 /* this prototype is required .. others not -  i still do not know what magic arduino is doing */
@@ -153,13 +150,17 @@ struct filterProcT
 struct filterCoeffT filterGlobalC;
 struct filterProcT mainFilterL, mainFilterR;
 
+float modulationDepth = 0.0f;
+float modulationSpeed = 5.0f;
+float modulationPitch = 1.0f;
+float pitchBendValue = 0.0f;
+float pitchMultiplier = 1.0f;
 
 struct oscillatorT
 {
-    float *waveForm;
+    float **waveForm;
     float *dest;
     uint32_t samplePos;
-    float samplePosF;
     uint32_t addVal;
     float pan_l;
     float pan_r;
@@ -212,26 +213,45 @@ void Synth_Init()
     square = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
     pulse = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
     tri = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
-    noise = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
+    crappy_noise = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
     silence = (float *)malloc(sizeof(float) * WAVEFORM_CNT);
 
-    Delay_Init();
+
+    Serial.print("Size of Wavs");
+    Serial.println( WAVEFORM_CNT );
 
     /*
      * let us calculate some waveforms
      * - using lookup tables can save a lot of processing power later
      * - but it does consume memory
      */
-    for (int i = 0; i < WAVEFORM_CNT; i++){
+    for (int i = 0; i < WAVEFORM_CNT; i++)
+    {
         float val = (float)sin(i * 2.0 * PI / WAVEFORM_CNT);
         sine[i] = val;
         saw[i] = (2.0f * ((float)i) / ((float)WAVEFORM_CNT)) - 1.0f;
         square[i] = (i > (WAVEFORM_CNT / 2)) ? 1 : -1;
         pulse[i] = (i > (WAVEFORM_CNT / 4)) ? 1 : -1;
         tri[i] = ((i > (WAVEFORM_CNT / 2)) ? (((4.0f * (float)i) / ((float)WAVEFORM_CNT)) - 1.0f) : (3.0f - ((4.0f * (float)i) / ((float)WAVEFORM_CNT)))) - 2.0f;
-        noise[i] = (random(1024) / 512.0f) - 1.0f;
-        silence[i] = 0;
+        crappy_noise[i] = (random(1024) / 512.0f) - 1.0f;
+        silence[i] = (float) pgm_read_word_near( AKWF_hvoice_0001 + i )/35000.0;
     }
+
+    waveFormLookUp[0] = sine;
+    waveFormLookUp[1] = saw;
+    waveFormLookUp[2] = square;
+    waveFormLookUp[3] = pulse;
+    waveFormLookUp[4] = tri;
+    waveFormLookUp[5] = crappy_noise;
+    waveFormLookUp[6] = silence;
+
+#ifdef USE_UNISON
+    selectedWaveForm  =  tri;
+    selectedWaveForm2 =  saw;
+#else
+    selectedWaveForm  =  pulse;
+    selectedWaveForm2 =  silence;
+#endif
 
     /*
      * initialize all oscillators
@@ -239,7 +259,7 @@ void Synth_Init()
     for (int i = 0; i < MAX_POLY_OSC; i++)
     {
         oscillatorT *osc = &oscPlayer[i];
-        osc->waveForm = silence;
+        osc->waveForm = &silence;
         osc->dest = voiceSink;
     }
 
@@ -259,7 +279,8 @@ void Synth_Init()
     /*
      * prepare lookup for constants to drive oscillators
      */
-    for (int i = 0; i < MIDI_NOTE_CNT; i++ ){
+    for (int i = 0; i < MIDI_NOTE_CNT; i++)
+    {
         float f = ((pow(2.0f, (float)(i - 69) / 12.0f) * 440.0f));
         uint32_t add = (uint32_t)(f * ((float)(1ULL << 32ULL) / ((float)SAMPLE_RATE)));
         midi_note_to_add[i] = add;
@@ -277,11 +298,6 @@ void Synth_Init()
      */
     mainFilterL.filterCoeff = &filterGlobalC;
     mainFilterR.filterCoeff = &filterGlobalC;
-
-    
-   lfoWaveForm = *selectedLfoWaveForm;
-
-    
 }
 
 struct filterCoeffT mainFilt;
@@ -302,52 +318,6 @@ static float filtReso = 0.5f;
 static float soundFiltReso = 0.5f;
 static float soundNoiseLevel = 0.0f;
 
-//inline 
-
-// 0-127
-void set_LFOSpeed( uint8_t lfospeed ){
-  if( lfospeed > 0 ){
-    lfoOn = true;
-    lfoSampleAdd = NORM127MUL * lfospeed;
-  }else{
-    lfoSampleAdd = 0.0;
-    lfoOn = false;
-    LFO_sync_sin();    
-  }  
-}
-
-// 0-127
-void set_LFOAmplitude( uint8_t lfoamp ){
-  lfoAmplitude = NORM127MUL * lfoamp;
-}
-
-void LFO_calc(){
-  // calculate the next LFO_value
-
-  lfoSamplePosF += lfoSampleAdd;
-  lfoSamplePos = round( lfoSamplePosF );//   lfoSamplePosF;
-  
-  // float lfo_sig = lfoWaveForm[WAVEFORM_I( lfoSamplePos )];
-  lfo_sig = lfoAmplitude *lfoWaveForm[ lfoSamplePos ];
-  // Serial.print( lfoSamplePos );
-  // Serial.print( "  "  );
-#ifdef DEBUG_SYNTH
-  Serial.println( lfo_sig );
-#endif  
-  if( lfoSamplePos >= 1024 ){
-    LFO_sync_sin();
-  }
-}
-
-void LFO_sync_sin(){
-    lfoSamplePosF = 0.0;
-    lfoSamplePos = 0;
-}
-
-void LFO_sync_cos(){
-    lfoSamplePosF = 256.0;
-    lfoSamplePos = 256;
-}
 /*
  * calculate coefficients of the 2nd order IIR filter
  */
@@ -365,13 +335,16 @@ inline void Filter_Calculate(float c, float reso, struct filterCoeffT *const  fi
      */
     c = c * c * c;
 
-    if (c >= 1.0f){
+    if (c >= 1.0f)
+    {
         omega = 1.0f;
     }
-    else if (c < 0.0025f){
+    else if (c < 0.0025f)
+    {
         omega = 0.0025f;
     }
-    else{
+    else
+    {
         omega = c;
     }
 
@@ -446,11 +419,14 @@ inline bool ADSR_Process(const struct adsrT *ctrl, float *ctrlSig, adsr_phaseT *
     return true;
 }
 
-void Voice_Off(uint32_t i){
+void Voice_Off(uint32_t i)
+{
     notePlayerT *voice = &voicePlayer[i];
-    for (int f = 0; f < MAX_POLY_OSC; f++){
+    for (int f = 0; f < MAX_POLY_OSC; f++)
+    {
         oscillatorT *osc = &oscPlayer[f];
-        if (osc->dest == voice->lastSample){
+        if (osc->dest == voice->lastSample)
+        {
             osc->dest = voiceSink;
             osc_act -= 1;
         }
@@ -458,12 +434,26 @@ void Voice_Off(uint32_t i){
     voc_act -= 1;
 }
 
+inline
+float SineNorm(float alpha_div2pi)
+{
+    uint32_t index = ((uint32_t)(alpha_div2pi * ((float)WAVEFORM_CNT))) % WAVEFORM_CNT;
+    return sine[index];
+}
+
+inline
+float GetModulation(void)
+{
+    float modSpeed = modulationSpeed;
+    return modulationDepth * modulationPitch * (SineNorm((modSpeed * ((float)millis()) / 1000.0f )));
+}
+
 static float out_l, out_r;
 static uint32_t count = 0;
 
 //[[gnu::noinline, gnu::optimize ("fast-math")]]
-inline void Synth_Process(float *left, float *right ){
-
+inline void Synth_Process(float *left, float *right)
+{
     /* gerenate a noise signal */
     float noise_signal = ((random(1024) / 512.0f) - 1.0f) * soundNoiseLevel;
 
@@ -482,20 +472,25 @@ inline void Synth_Process(float *left, float *right ){
     voiceSink[0] = 0;
     voiceSink[1] = 0;
 
-
-    // calculate modulation-value based on one wavform
-
-     
+    /*
+     * update pitch bending / modulation
+     */
+    if (count % 64 == 0)
+    {
+        float pitchVar = pitchBendValue + GetModulation();
+        static float lastPitchVar = 0;
+        pitchMultiplier = pow(2.0f, pitchVar / 12.0f);
+    }
 
     /*
      * oscillator processing -> mix to voice
      */
-    for (int i = 0; i < MAX_POLY_OSC; i++ ){
+    for (int i = 0; i < MAX_POLY_OSC; i++)
+    {
         oscillatorT *osc = &oscPlayer[i];
         {
-            // portamento has to be calculated per Oscillator by incrementing from old osc->addVal to the curreent addVal.  
-            osc->samplePos += (uint32_t) ( ( 1 + ( lfo_sig * lfo_matrix_to_pitch )) * globalBend * osc->addVal  );            
-            float sig = osc->waveForm[WAVEFORM_I(osc->samplePos)];
+            osc->samplePos += (uint32_t)( pitchMultiplier * ((float)osc->addVal));
+            float sig = (*osc->waveForm)[WAVEFORM_I(osc->samplePos)];
             osc->dest[0] += osc->pan_l * sig;
             osc->dest[1] += osc->pan_r * sig;
         }
@@ -507,10 +502,13 @@ inline void Synth_Process(float *left, float *right ){
     for (int i = 0; i < MAX_POLY_VOICE; i++) /* one loop is faster than two loops */
     {
         notePlayerT *voice = &voicePlayer[i];
-        if( voice->active ){
-            if( count % 4 == 0 ){
+        if (voice->active)
+        {
+            if (count % 4 == 0)
+            {
                 voice->active = ADSR_Process(&adsr_vol, &voice->control_sign, &voice->phase);
-                if( voice->active == false ){
+                if (voice->active == false)
+                {
                     Voice_Off(i);
                 }
                 /*
@@ -526,7 +524,8 @@ inline void Synth_Process(float *left, float *right ){
             voice->lastSample[0] *= voice->control_sign * voice->velocity;
             voice->lastSample[1] *= voice->control_sign * voice->velocity;
 
-            if( count % 32 == 0 ){
+            if (count % 32 == 0)
+            {
                 voice->f_control_sign_slow = 0.05 * voice->f_control_sign + 0.95 * voice->f_control_sign_slow;
                 Filter_Calculate(voice->f_control_sign_slow, soundFiltReso, &voice->filterC);
             }
@@ -547,10 +546,7 @@ inline void Synth_Process(float *left, float *right ){
     Filter_Process(&out_l, &mainFilterL);
     Filter_Process(&out_r, &mainFilterR);
 
-    /*
-     * process delay line
-     */
-    Delay_Process(&out_l, &out_r);
+
 
     /*
      * reduce level a bit to avoid distortion
@@ -596,7 +592,7 @@ inline void Filter_Reset(struct filterProcT *filter)
     filter->w[2] = 0.0f;
 }
 
-inline void Synth_NoteOn(uint8_t note)
+inline void Synth_NoteOn(uint8_t ch, uint8_t note, float vel)
 {
     struct notePlayerT *voice = getFreeVoice();
     struct oscillatorT *osc = getFreeOsc();
@@ -604,13 +600,14 @@ inline void Synth_NoteOn(uint8_t note)
     /*
      * No free voice found, return otherwise crash xD
      */
-    if ((voice == NULL) || (osc == NULL)){
+    if ((voice == NULL) || (osc == NULL))
+    {
         //Serial.printf("voc: %d, osc: %d\n", voc_act, osc_act);
         return ;
     }
 
     voice->midiNote = note;
-    voice->velocity = 0.25; /* just something to test */
+    voice->velocity = 0.25; // vel * 1.25 - (note/500);// 0.25; /* just something to test */
     voice->lastSample[0] = 0.0f;
     voice->lastSample[1] = 0.0f;
     voice->control_sign = 0.0f;
@@ -618,7 +615,8 @@ inline void Synth_NoteOn(uint8_t note)
 #if 0
     voice->f_phase = attack;
 #else
-    if (adsr_fil.a < adsr_fil.s){
+    if (adsr_fil.a < adsr_fil.s)
+    {
         adsr_fil.a = adsr_fil.s;
     }
     voice->f_phase = decay;
@@ -634,7 +632,8 @@ inline void Synth_NoteOn(uint8_t note)
      * add oscillator
      */
 #ifdef USE_UNISON
-    if (unison > 0 ){
+    if (unison > 0 )
+    {
         /*
          * shift first oscillator down
          */
@@ -645,9 +644,8 @@ inline void Synth_NoteOn(uint8_t note)
     {
         osc->addVal = midi_note_to_add[note];
     }
-    osc->samplePosF = 0.0f;
     osc->samplePos = 0;
-    osc->waveForm = *selectedWaveForm;
+    osc->waveForm = &selectedWaveForm;
     osc->dest = voice->lastSample;
     osc->pan_l = 1;
     osc->pan_r = 1;
@@ -665,28 +663,32 @@ inline void Synth_NoteOn(uint8_t note)
     for (int i = 0; i < unison; i++)
     {
         osc = getFreeOsc();
-        if( osc == NULL ){
+        if (osc == NULL)
+        {
             //Serial.printf("voc: %d, osc: %d\n", voc_act, osc_act);
             return ;
         }
 
         osc->addVal = midi_note_to_add[note] + ((i + 1 - (unison * 0.5)) * midi_note_to_add50c[note] * detune / unison);
         osc->samplePos = (uint32_t)random(1 << 31); /* otherwise it sounds ... bad!? */
-        osc->samplePosF = 1.0f * osc->samplePos; /* otherwise it sounds ... bad!? */
-        osc->waveForm = *selectedWaveForm2;
+        osc->waveForm = &selectedWaveForm2;
         osc->dest = voice->lastSample;
 
         /*
          * put last osc in the middle
          */
-        if ((unison - 1) == i){
+        if ((unison - 1) == i)
+        {
             osc->pan_l = 1;
             osc->pan_r = 1;
         }
-        else if( pan == 1 ){
+        else if (pan == 1)
+        {
             osc->pan_l = 1;
             osc->pan_r = 0.5;
-        }else{
+        }
+        else
+        {
             osc->pan_l = 0.5;
             osc->pan_r = 1;
         }
@@ -695,12 +697,13 @@ inline void Synth_NoteOn(uint8_t note)
     }
 #else
     osc = getFreeOsc();
-    if( osc != NULL ){
-        if (note + 12 < 128){
-            osc->addVal = midi_note_to_add[ note + 12 ];
-            osc->samplePosF = 0.0f; /* we could add some offset maybe */
+    if (osc != NULL)
+    {
+        if (note - 12 > 12 )// 128)
+        {
+            osc->addVal = midi_note_to_add[note - 12];
             osc->samplePos = 0; /* we could add some offset maybe */
-            osc->waveForm = *selectedWaveForm2;
+            osc->waveForm = &selectedWaveForm2;
             osc->dest = voice->lastSample;
             osc->pan_l = 1;
             osc->pan_r = 1;
@@ -726,100 +729,62 @@ inline void Synth_NoteOn(uint8_t note)
 
 }
 
-inline void Synth_NoteOff(uint8_t note)
+inline void Synth_NoteOff(uint8_t ch, uint8_t note)
 {
-    for( int i = 0; i < MAX_POLY_VOICE ; i++ ){
-        if((voicePlayer[i].active) && (voicePlayer[i].midiNote == note)){
+    for (int i = 0; i < MAX_POLY_VOICE ; i++)
+    {
+        if ((voicePlayer[i].active) && (voicePlayer[i].midiNote == note))
+        {
             voicePlayer[i].phase = release;
         }
     }
 }
 
-void Synth_SetRotary(uint8_t rotary, float value ){
-    switch( rotary ){
-#ifdef USE_UNISON
-    case 0:
-        detune = value;
-        Serial.printf("detune: %0.3f cent\n", detune * 50);
-        break;
-    case 1:
-        unison = (uint8_t)(MAX_DETUNE * value);
-        Serial.printf("unison: 1 + %d\n", unison);
-        break;
-#else
-    case 0:
-        {
-            uint8_t selWaveForm = (value) * (WAVEFORM_TYPE_COUNT);
-            selectedWaveForm = waveFormLookUp[selWaveForm];
-            Serial.printf("selWaveForm: %d\n", selWaveForm);
-        }
-        break;
-    case 1:
-        {
-            uint8_t selWaveForm = (value) * (WAVEFORM_TYPE_COUNT);
-            selectedWaveForm2 = waveFormLookUp[selWaveForm];
-            Serial.printf("selWaveForm2: %d\n", selWaveForm);
-        }
-#endif
-        break;
-    case 2:
-        Delay_SetLength(value);
-        break;
-    case 3:
-        Delay_SetLevel(value);
-        break;
-    case 4:
-        Delay_SetFeedback(value);
-        break;
-
-    case 5:
-        filtCutoff = value;
-        Serial.printf("main filter cutoff: %0.3f\n", filtCutoff);
-        Filter_Calculate(filtCutoff, filtReso, &filterGlobalC);
-        break;
-    case 6:
-        filtReso =  0.5f + 10 * value * value * value; /* min q is 0.5 here */
-        Serial.printf("main filter reso: %0.3f\n", filtReso);
-        Filter_Calculate(filtCutoff, filtReso, &filterGlobalC);
-        break;
-
-    case 7:
-        soundFiltReso = 0.5f + 10 * value * value * value; /* min q is 0.5 here */
-        Serial.printf("voice filter reso: %0.3f\n", soundFiltReso);
-        break;
-
-    case 8:
-        soundNoiseLevel = value;
-        Serial.printf("voice noise level: %0.3f\n", soundNoiseLevel);
-        break;
-
-    default:
-        break;
-    }
+void Synth_ModulationWheel(uint8_t ch, float value)
+{
+    modulationDepth = value;
 }
 
-void Synth_SetSlider(uint8_t slider, float value)
+void Synth_ModulationSpeed(uint8_t ch, float value)
+{
+    modulationSpeed = value * 10;
+    //Status_ValueChangedFloat("ModulationSpeed", modulationSpeed);
+}
+
+void Synth_ModulationPitch(uint8_t ch, float value)
+{
+    modulationPitch = value * 5;
+    //Status_ValueChangedFloat("ModulationDepth", modulationPitch);
+}
+
+void Synth_PitchBend(uint8_t ch, float bend)
+{
+    pitchBendValue = bend;
+    Serial.printf("pitchBendValue: %0.3f\n", pitchBendValue);
+}
+
+void Synth_SetParam(uint8_t slider, float value)
 {
     switch (slider)
     {
-    case 0:
+    case SYNTH_PARAM_VEL_ENV_ATTACK:
         adsr_vol.a = (0.00005 * pow(5000, 1.0f - value));
         Serial.printf("voice volume attack: %0.6f\n", adsr_vol.a);
         break;
-    case 1:
+    case SYNTH_PARAM_VEL_ENV_DECAY:
         adsr_vol.d = (0.00005 * pow(5000, 1.0f - value));
         Serial.printf("voice volume decay: %0.6f\n", adsr_vol.d);
         break;
-    case 2:
+    case SYNTH_PARAM_VEL_ENV_SUSTAIN:
         adsr_vol.s = (0.01 * pow(100, value));
         Serial.printf("voice volume sustain: %0.6f\n", adsr_vol.s);
         break;
-    case 3:
+    case SYNTH_PARAM_VEL_ENV_RELEASE:
         adsr_vol.r = (0.0001 * pow(100, 1.0f - value));
         Serial.printf("voice volume release: %0.6f\n", adsr_vol.r);
         break;
 
-    case 4:
+    case SYNTH_PARAM_FIL_ENV_ATTACK:
 #if 0
         adsr_fil.a = (0.00005 * pow(5000, 1.0f - value));
 #else
@@ -827,17 +792,63 @@ void Synth_SetSlider(uint8_t slider, float value)
 #endif
         Serial.printf("voice filter attack: %0.6f\n", adsr_fil.a);
         break;
-    case 5:
+    case SYNTH_PARAM_FIL_ENV_DECAY:
         adsr_fil.d = (0.00005 * pow(5000, 1.0f - value));
         Serial.printf("voice filter decay: %0.6f\n", adsr_fil.d);
         break;
-    case 6:
+    case SYNTH_PARAM_FIL_ENV_SUSTAIN:
         adsr_fil.s = value;
         Serial.printf("voice filter sustain: %0.6f\n", adsr_fil.s);
         break;
-    case 7:
+    case SYNTH_PARAM_FIL_ENV_RELEASE:
         adsr_fil.r = (0.0001 * pow(100, 1.0f - value));
         Serial.printf("voice filter release: %0.6f\n", adsr_fil.r);
+        break;
+
+#ifdef USE_UNISON
+    case SYNTH_PARAM_DETUNE_1:
+        detune = value;
+        Serial.printf("detune: %0.3f cent\n", detune * 50);
+        break;
+    case SYNTH_PARAM_UNISON_2:
+        unison = (uint8_t)(MAX_DETUNE * value);
+        Serial.printf("unison: 1 + %d\n", unison);
+        break;
+#else
+    case SYNTH_PARAM_WAVEFORM_1:
+        {
+            uint8_t selWaveForm = (value) * (WAVEFORM_TYPE_COUNT);
+            selectedWaveForm = waveFormLookUp[selWaveForm];
+            Serial.printf("selWaveForm: %d\n", selWaveForm);
+        }
+        break;
+    case SYNTH_PARAM_WAVEFORM_2:
+        {
+            uint8_t selWaveForm = (value) * (WAVEFORM_TYPE_COUNT);
+            selectedWaveForm2 = waveFormLookUp[selWaveForm];
+            Serial.printf("selWaveForm2: %d\n", selWaveForm);
+        }
+        break;
+#endif
+    case SYNTH_PARAM_MAIN_FILT_CUTOFF:
+        filtCutoff = value;
+        Serial.printf("main filter cutoff: %0.3f\n", filtCutoff);
+        Filter_Calculate(filtCutoff, filtReso, &filterGlobalC);
+        break;
+    case SYNTH_PARAM_MAIN_FILT_RESO:
+        filtReso =  0.5f + 10 * value * value * value; /* min q is 0.5 here */
+        Serial.printf("main filter reso: %0.3f\n", filtReso);
+        Filter_Calculate(filtCutoff, filtReso, &filterGlobalC);
+        break;
+
+    case SYNTH_PARAM_VOICE_FILT_RESO:
+        soundFiltReso = 0.5f + 10 * value * value * value; /* min q is 0.5 here */
+        Serial.printf("voice filter reso: %0.3f\n", soundFiltReso);
+        break;
+
+    case SYNTH_PARAM_VOICE_NOISE_LEVEL:
+        soundNoiseLevel = value;
+        Serial.printf("voice noise level: %0.3f\n", soundNoiseLevel);
         break;
 
     default:
